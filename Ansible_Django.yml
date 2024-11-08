@@ -1,0 +1,231 @@
+# Ansible_Django.yml
+---
+- name: Install Django CMS with Nginx on Ubuntu 22
+  hosts: all
+  become: true
+  vars_files:
+    - Common_Variables.yml
+
+  tasks:
+    - name: Update the system
+      apt:
+        update_cache: yes
+        upgrade: dist
+        cache_valid_time: 3600
+
+    - name: Install required system packages
+      apt:
+        name:
+          - python3
+          - python3-pip
+          - python3-venv
+          - libsqlite3-dev
+          - nginx
+          - ufw
+        state: present
+
+    - name: Create project directory
+      file:
+        path: "{{ django_project_dir }}"
+        state: directory
+        mode: '0755'
+
+    - name: Remove existing virtual environment (if exists)
+      file:
+        path: "{{ django_project_dir }}/env"
+        state: absent
+        force: true
+
+    - name: Create a new virtual environment
+      command: "python3 -m venv env"
+      args:
+        chdir: "{{ django_project_dir }}"
+
+    - name: Upgrade pip inside virtual environment
+      command: "{{ django_project_dir }}/env/bin/pip install --upgrade pip"
+      args:
+        chdir: "{{ django_project_dir }}"
+
+    - name: Install Django CMS installer inside virtual environment
+      pip:
+        name: django-cms
+        state: present
+        virtualenv: "{{ django_project_dir }}/env"
+        
+    - name: Remove existing Django project (if exists)
+      file:
+        path: "{{ django_project_dir }}/{{ django_project_name }}"
+        state: absent
+        force: yes
+
+    - name: Create a new Django project
+      command: "{{ django_project_dir }}/env/bin/djangocms --noinput {{ django_project_name }}"
+      args:
+        chdir: "{{ django_project_dir }}"
+      register: project_creation_result
+
+    - name: Run django CMS consistency check
+      command: "{{ django_project_dir }}/env/bin/python manage.py cms check"
+      args:
+        chdir: "{{ django_project_dir }}/{{ django_project_name }}"
+
+    - name: Set up STATIC_ROOT in settings
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^STATIC_ROOT ='
+        line: "STATIC_ROOT = os.path.join(BASE_DIR, 'staticfiles')"
+        create: yes
+
+    - name: Collect static files (necessary for production)
+      command: "{{ django_project_dir }}/env/bin/python manage.py collectstatic --noinput"
+      args:
+        chdir: "{{ django_project_dir }}/{{ django_project_name }}"
+        
+    - name: Install Gunicorn inside virtual environment
+      pip:
+        name: gunicorn
+        state: present
+        virtualenv: "{{ django_project_dir }}/env"
+
+    - name: Create Gunicorn systemd service file
+      template:
+        src: gunicorn.service.j2
+        dest: /etc/systemd/system/gunicorn.service
+
+    - name: Create Django superuser
+      shell: "{{ django_project_dir }}/env/bin/python {{ django_project_dir }}/{{ django_project_name }}/manage.py createsuperuser --no-input --username {{ django_superuser_username }} --email {{ django_superuser_email }}"
+      args:
+        chdir: "{{ django_project_dir }}/{{ django_project_name }}"
+      environment:
+        DJANGO_SUPERUSER_PASSWORD: "{{ django_superuser_password }}"
+      when: django_superuser_username is defined and django_superuser_email is defined and django_superuser_password is defined
+
+    - name: Change ownership of the project directory to www-data
+      file:
+        path: "{{ django_project_dir }}"
+        owner: www-data
+        group: www-data
+        recurse: yes
+
+    - name: Reload systemd manager configuration
+      systemd:
+        daemon_reload: yes
+
+    - name: Ensure proper permissions for project directory
+      file:
+        path: "{{ django_project_dir }}"
+        mode: '0755'
+        recurse: yes
+
+    - name: Start and enable Gunicorn
+      systemd:
+        name: gunicorn
+        state: restarted
+        enabled: true
+
+    - name: Get the server's public IP address
+      command: "curl -s http://checkip.amazonaws.com"
+      register: public_ip
+
+    - name: Configure Nginx to serve Django CMS
+      template:
+        src: nginx_site.j2
+        dest: /etc/nginx/sites-available/{{ django_project_name }}
+
+    - name: Enable Nginx site
+      file:
+        src: "/etc/nginx/sites-available/{{ django_project_name }}"
+        dest: "/etc/nginx/sites-enabled/{{ django_project_name }}"
+        state: link
+
+    - name: Remove the default Nginx site
+      file:
+        path: /etc/nginx/sites-enabled/default
+        state: absent
+
+    - name: Ensure proper permissions for the unix socket
+      file:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}.sock"
+        mode: '0755'
+        recurse: no
+
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted
+
+    - name: Ensure Nginx is enabled and running
+      systemd:
+        name: nginx
+        state: started
+        enabled: true
+        
+    - name: Update ALLOWED_HOSTS in settings.py
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^ALLOWED_HOSTS ='
+        line: >
+          ALLOWED_HOSTS = [{% if Domain | length > 0 %}
+            '{{ Domain }}',
+          {% else %}
+            '{{ public_ip.stdout }}', '{{ public_ip.stdout }}.nip.io', '{{ public_ip.stdout }}.xip.io',
+          {% endif %}
+            'localhost', '127.0.0.1']
+        state: present
+        
+    - name: Update STATIC_URL in settings.py
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^STATIC_URL ='
+        line: "STATIC_URL = '/static'"
+        state: present
+ 
+    - name: Update DEBUG in settings.py
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^DEBUG ='
+        line: "DEBUG = False"
+        state: present
+ 
+    - name: Update MEDIA_URL in settings.py
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^MEDIA_URL ='
+        line: "MEDIA_URL = {{ MEDIA_URL }}"
+        state: present
+ 
+    - name: Update MEDIA_ROOT in settings.py
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^MEDIA_ROOT ='
+        line: "MEDIA_ROOT = {{ MEDIA_ROOT }}"
+        state: present
+ 
+    - name: Update DOMAIN_NAME in settings.py
+      lineinfile:
+        path: "{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}/settings.py"
+        regexp: '^DOMAIN_NAME ='
+        line: "DOMAIN_NAME = {{ DOMAIN_NAME }}"
+        state: present
+ 
+    - name: Start and enable Gunicorn
+      systemd:
+        name: gunicorn
+        state: restarted
+        enabled: true
+
+    - name: Ensure UFW is installed and enabled
+      ufw:
+        state: enabled
+
+    - name: Ensure UFW firewall is allowing 'Nginx Full'
+      ufw:
+        rule: allow
+        name: 'Nginx Full'
+
+    - name: Display the website's IP address
+      debug:
+        msg: "The website is now accessible at http://{{ public_ip.stdout }}"
+    
+- import_playbook: Ansible_SSL.yml
+  when: HTTPS | bool

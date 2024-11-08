@@ -1,0 +1,47 @@
+# Common_Variables.yml
+
+# Django01
+django_project_dir: /etc/Django01_Project01
+django_project_name: "Django01"
+server_name: "Django01"
+# settings.py
+MEDIA_URL: "'/media/'"
+MEDIA_ROOT: "BASE_DIR / 'media'"
+DOMAIN_NAME: "'YourDomainHere'"
+# Superuser credentials
+django_superuser_username: "YourUsernameHere"
+django_superuser_email: "YourEmailHere"
+django_superuser_password: "YourPasswordHere"  # You can use Ansible Vault for better security.
+#SSL Stuff
+Domain: "YourDomainHere" # Leave empty for a nip.io/xip.io install
+HTTPS: true # Set to false for HTTP only install
+ssl_admin_email: "leha55481@gmail.com"
+ssl_certificate: "/etc/letsencrypt/live/{{ ssl_domain }}/fullchain.pem"
+ssl_certificate_key: "/etc/letsencrypt/live/{{ ssl_domain }}/privkey.pem"
+
+# Gunicorn settings
+gunicorn_workers: 3
+gunicorn_user: "www-data"
+gunicorn_group: "www-data"
+
+#Monitoring Stuff
+grafana_version: "10.1.0"
+grafana_superuser_username: "YourUsernameHere"
+grafana_superuser_password: "YourPasswordHere"
+
+prometheus_version: "2.47.0"
+prometheus_user: "prometheus"
+prometheus_data_dir: "/var/lib/prometheus"
+
+loki_version: "3.2.0"
+loki_user: "loki"
+loki_data_dir: "/var/lib/loki"
+
+promtail_version: "3.2.0"
+node_exporter_version: "1.8.0"
+
+# Your IP addresses here
+monitoring_ip: 000.000.000.000
+website_ip: 000.000.000.000
+
+install_dir: "/opt"

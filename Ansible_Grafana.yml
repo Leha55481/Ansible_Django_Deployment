@@ -1,0 +1,156 @@
+# Ansible_Grafana.yml
+---
+- name: Install Grafana
+  hosts: all
+  become: yes
+  vars_files:
+    - Common_Variables.yml
+
+  pre_tasks:
+    - name: Check if Grafana is already running
+      shell: |
+        systemctl is-active grafana-server
+      register: grafana_status
+      ignore_errors: true
+
+    - name: Set a fact if Grafana is already running
+      set_fact:
+        skip_grafana_tasks: "{{ grafana_status.rc == 0 }}"
+
+  tasks:
+
+    - name: Open UFW ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        state: enabled
+      with_items:
+        - 3000
+        - 22
+
+    - name: Add Grafana GPG key
+      apt_key:
+        url: https://packages.grafana.com/gpg.key
+        state: present
+      when: not skip_grafana_tasks
+
+    - name: Add Grafana APT repository
+      apt_repository:
+        repo: "deb https://packages.grafana.com/oss/deb stable main"
+        state: present
+        filename: grafana
+      when: not skip_grafana_tasks
+
+    - name: Install Grafana
+      apt:
+        name: grafana
+        state: present
+        update_cache: yes
+      when: not skip_grafana_tasks
+
+    - name: Configure Grafana admin credentials
+      lineinfile:
+        path: /etc/grafana/grafana.ini
+        regexp: '^;?(admin_user|admin_password)'
+        line: |
+          admin_user = {{ grafana_superuser_username }}
+          admin_password = {{ grafana_superuser_password }}
+        state: present
+        create: yes
+        insertafter: '[security]'
+      when: not skip_grafana_tasks
+
+    - name: Enable and start Grafana service
+      systemd:
+        name: grafana-server
+        enabled: yes
+        state: started
+      when: not skip_grafana_tasks
+
+- import_playbook: Ansible_Prometheus.yml
+
+- import_playbook: Ansible_Loki.yml
+
+- import_playbook: Ansible_Node_Exporter.yml
+
+- import_playbook: Ansible_Promtail.yml
+
+- name: Configure Grafana datasources
+  hosts: all
+  become: yes
+  tasks:
+    - name: Create Prometheus datasource config file
+      copy:
+        dest: /etc/grafana/provisioning/datasources/prometheus.yml
+        content: |
+          apiVersion: 1
+          datasources:
+            - name: Prometheus
+              type: prometheus
+              url: http://localhost:9090
+              access: proxy
+              isDefault: true
+              editable: true
+
+    - name: Create Loki datasource config file
+      copy:
+        dest: /etc/grafana/provisioning/datasources/loki.yml
+        content: |
+          apiVersion: 1
+          datasources:
+            - name: Loki
+              type: loki
+              url: http://localhost:3100
+              access: proxy
+              isDefault: false
+              editable: true
+
+    - name: Restart Grafana
+      systemd:
+        name: grafana-server
+        state: restarted
+        enabled: yes
+
+- name: Configure Grafana dashboards
+  hosts: all
+  become: yes
+  tasks:
+
+    - name: Create directory for dashboards
+      file:
+        path: /var/lib/grafana/dashboards/
+        state: directory
+        owner: grafana
+        group: grafana
+        mode: '0755'
+
+    - name: Deploy Grafana dashboard JSON file
+      copy:
+        src: Grafana_Dashboard.json
+        dest: /var/lib/grafana/dashboards/my_dashboard.json  # Destination path for the JSON file
+        owner: grafana
+        group: grafana
+        mode: '0644'
+
+    - name: Upload dashboard provisioning configuration
+      copy:
+        content: |
+          apiVersion: 1
+          providers:
+            - name: 'My Dashboard Provider'
+              folder: ''
+              type: file
+              disableDeletion: true
+              updateIntervalSeconds: 10
+              options:
+                path: /var/lib/grafana/dashboards/
+        dest: /etc/grafana/provisioning/dashboards/my_dashboards.yaml
+        owner: grafana
+        group: grafana
+        mode: '0644'
+
+    - name: Restart Grafana to apply dashboard provisioning
+      systemd:
+        name: grafana-server
+        state: restarted
+        enabled: yes

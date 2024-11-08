@@ -1,0 +1,88 @@
+# Ansible_Node_Exporter.yml
+---
+- name: Install and configure Node Exporter
+  hosts: all
+  become: yes
+  vars_files:
+    - Common_Variables.yml
+
+  tasks:
+  
+    - name: Open UFW ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        state: enabled
+      with_items:
+        - 9100
+        - 22
+  
+    - name: Get the server's public IP address
+      command: "curl -s http://checkip.amazonaws.com"
+      register: public_ip
+
+    - name: Set localhost if monitoring_ip matches public IP
+      set_fact:
+        node_exporter_url: "http://localhost:9100/metrics"
+      when: public_ip.stdout == monitoring_ip
+
+    - name: Set node_exporter URL
+      set_fact:
+        node_exporter_url: "http://{{ monitoring_ip }}:9100/metrics"
+      when: public_ip.stdout != monitoring_ip
+
+    - name: Download Node Exporter
+      get_url:
+        url: "https://github.com/prometheus/node_exporter/releases/download/v{{ node_exporter_version }}/node_exporter-{{ node_exporter_version }}.linux-amd64.tar.gz"
+        dest: /tmp/node_exporter.tar.gz
+
+    - name: Extract Node Exporter
+      unarchive:
+        src: /tmp/node_exporter.tar.gz
+        dest: /usr/local/bin/
+        remote_src: yes
+        creates: "/usr/local/bin/node_exporter-{{ node_exporter_version }}.linux-amd64"
+
+    - name: Create symlink for node_exporter
+      file:
+        src: "/usr/local/bin/node_exporter-{{ node_exporter_version }}.linux-amd64/node_exporter"
+        dest: /usr/local/bin/node_exporter
+        state: link
+
+    - name: Create systemd service for Node Exporter
+      copy:
+        dest: /etc/systemd/system/node_exporter.service
+        content: |
+          [Unit]
+          Description=Node Exporter
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User=root
+          ExecStart=/usr/local/bin/node_exporter \
+            --web.listen-address="0.0.0.0:9100" \
+            --collector.cpu \
+            --collector.meminfo \
+            --collector.diskstats \
+            --collector.filesystem \
+            --collector.netdev \
+            --collector.stat \
+            --collector.systemd \
+            --collector.uname \
+            --collector.vmstat \
+            --collector.loadavg \
+            --collector.netstat \
+            --collector.time
+
+          Restart=always
+
+          [Install]
+          WantedBy=default.target
+
+    - name: Reload systemd and start Node Exporter
+      systemd:
+        daemon_reload: yes
+        name: node_exporter
+        enabled: yes
+        state: started

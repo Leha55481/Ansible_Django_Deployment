@@ -1,0 +1,28 @@
+# Ansible_Main.yml
+---
+- name: Main playbook to run multiple other playbooks
+  hosts: localhost
+  gather_facts: no
+  vars_files:
+    - Common_Variables.yml
+
+  tasks:
+    - name: Run Django playbook on website server
+      include_tasks: Ansible_Django.yml
+      vars:
+        ansible_host: "{{ website_ip }}"
+
+    - name: Run Promtail playbook on website server
+      include_tasks: Ansible_Promtail.yml
+      vars:
+        ansible_host: "{{ website_ip }}"
+
+    - name: Run Node Exporter playbook on website server
+      include_tasks: Ansible_Node_Exporter.yml
+      vars:
+        ansible_host: "{{ website_ip }}"
+
+    - name: Run Grafana playbook on monitoring server
+      include_tasks: Ansible_Grafana.yml
+      vars:
+        ansible_host: "{{ monitoring_ip }}"

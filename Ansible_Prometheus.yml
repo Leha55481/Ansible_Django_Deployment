@@ -1,0 +1,121 @@
+# Ansible_Prometheus.yml
+---
+- name: Install Prometheus
+  hosts: all
+  become: yes
+  vars_files:
+    - Common_Variables.yml
+
+  pre_tasks:
+    - name: Check if Prometheus is running
+      command: systemctl is-active prometheus
+      register: prometheus_status
+      ignore_errors: yes
+
+  tasks:
+  
+    - name: Open UFW ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        state: enabled
+      with_items:
+        - 9090
+        - 22
+
+    - name: Create Prometheus user and directories
+      user:
+        name: "{{ prometheus_user }}"
+        shell: /sbin/nologin
+        home: "{{ install_dir }}/prometheus"
+        system: yes
+      when: prometheus_status.stdout != "active"
+
+    - name: Download Prometheus
+      get_url:
+        url: "https://github.com/prometheus/prometheus/releases/download/v{{ prometheus_version }}/prometheus-{{ prometheus_version }}.linux-amd64.tar.gz"
+        dest: "/tmp/prometheus.tar.gz"
+      when: prometheus_status.stdout != "active"
+
+    - name: Extract Prometheus
+      unarchive:
+        src: "/tmp/prometheus.tar.gz"
+        dest: "{{ install_dir }}"
+        remote_src: yes
+        creates: "{{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64"
+      when: prometheus_status.stdout != "active"
+
+    - name: Symlink Prometheus binary
+      file:
+        src: "{{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64/prometheus"
+        dest: "/usr/local/bin/prometheus"
+        state: link
+      when: prometheus_status.stdout != "active"
+
+    - name: Symlink Promtool binary
+      file:
+        src: "{{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64/promtool"
+        dest: "/usr/local/bin/promtool"
+        state: link
+      when: prometheus_status.stdout != "active"
+
+    - name: Get the server's public IP address
+      command: "curl -s http://checkip.amazonaws.com"
+      register: public_ip
+
+    - name: Copy Prometheus configuration
+      copy:
+        dest: "{{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64/prometheus.yml"
+        content: |
+          global:
+            scrape_interval: 15s
+
+          scrape_configs:
+            - job_name: 'prometheus'
+              static_configs:
+                - targets: ['localhost:9100', '{{ website_ip }}:9100']
+        owner: "{{ prometheus_user }}"
+        group: "{{ prometheus_user }}"
+        mode: 0644
+
+    - name: Create Prometheus data directory
+      file:
+        path: "{{ prometheus_data_dir }}"
+        state: directory
+        owner: "{{ prometheus_user }}"
+        group: "{{ prometheus_user }}"
+        mode: 0755
+      when: prometheus_status.stdout != "active"
+
+    - name: Create Prometheus systemd service
+      copy:
+        dest: /etc/systemd/system/prometheus.service
+        content: |
+          [Unit]
+          Description=Prometheus
+          Wants=network-online.target
+          After=network-online.target
+
+          [Service]
+          User={{ prometheus_user }}
+          ExecStart=/usr/local/bin/prometheus \
+            --config.file={{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64/prometheus.yml \
+            --storage.tsdb.path={{ prometheus_data_dir }} \
+            --web.console.templates={{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64/consoles \
+            --web.console.libraries={{ install_dir }}/prometheus-{{ prometheus_version }}.linux-amd64/console_libraries
+          Restart=always
+
+          [Install]
+          WantedBy=multi-user.target
+      notify: Reload systemd
+
+    - name: Enable and start Prometheus service
+      systemd:
+        name: prometheus
+        enabled: yes
+        state: started
+
+  handlers:
+    - name: Reload systemd
+      systemd:
+        daemon_reload: yes

@@ -1,0 +1,93 @@
+# Ansible_SSL.yml
+---
+- name: Obtain SSL certificates for Django project using provided Domain or nip.io/xip.io
+  hosts: all
+  become: true
+  vars_files:
+    - Common_Variables.yml
+
+  tasks:
+    - name: Get the server's public IP address
+      command: "curl -s http://checkip.amazonaws.com"
+      register: public_ip
+
+    - name: Set the SSL domain based on the provided Domain variable (case insensitive)
+      set_fact:
+        ssl_domain: "{{ Domain | lower if Domain | length > 0 else public_ip.stdout + '.nip.io' }}"
+
+    - name: Install Certbot
+      apt:
+        name: certbot
+        state: present
+
+    - name: Install Certbot nginx plugin
+      apt:
+        name: python3-certbot-nginx
+        state: present
+
+    - name: Obtain SSL certificates with Certbot
+      command: >
+        certbot --nginx
+        -n --agree-tos --email {{ ssl_admin_email }}
+        -d {{ ssl_domain }}
+      register: certbot_result
+      failed_when: "'Invalid' in certbot_result.stderr or 'Error' in certbot_result.stderr"
+      ignore_errors: yes
+      notify:
+        - Restart Nginx
+
+    - name: If Certbot failed with provided domain or nip.io, switch to xip.io (if not using a custom domain)
+      set_fact:
+        ssl_domain: "{{ public_ip.stdout }}.xip.io"
+      when: certbot_result.failed and (Domain | length == 0)
+
+    - name: Obtain SSL certificates with Certbot using xip.io (if initial attempt failed and no custom domain)
+      command: >
+        certbot --nginx
+        -n --agree-tos --email {{ ssl_admin_email }}
+        -d {{ ssl_domain }}
+      when: certbot_result.failed and (Domain | length == 0)
+      register: certbot_xip
+      notify:
+        - Restart Nginx
+
+    - name: Ensure Nginx configuration uses SSL certificates
+      template:
+        src: nginx_site_ssl.j2
+        dest: /etc/nginx/sites-available/{{ django_project_name }}
+      notify:
+        - Restart Nginx
+
+    - name: Output Certbot messages for the first attempt
+      debug:
+        msg: |
+          Certbot output:
+          {{ certbot_result.stdout | default('') }}
+          {{ certbot_result.stderr | default('') }}
+      when: certbot_result is defined and not certbot_result.failed
+
+    - name: Output Certbot messages for xip.io (if used)
+      debug:
+        msg: |
+          Certbot xip.io output:
+          {{ certbot_xip.stdout | default('') }}
+          {{ certbot_xip.stderr | default('') }}
+      when: certbot_xip is defined and certbot_result.failed and (Domain | length == 0)
+
+    - name: Check Nginx status
+      command: systemctl is-active nginx
+      register: nginx_status
+
+    - name: Output Nginx status
+      debug:
+        var: nginx_status.stdout
+
+    - name: Output resulting domain at the end
+      debug:
+        msg: "The website is now accessible at https://{{ ssl_domain }}"
+
+  handlers:
+    - name: Restart Nginx
+      service:
+        name: nginx
+        state: restarted

@@ -1,0 +1,113 @@
+# Ansible_Promtail.yml
+---
+- name: Install and configure Promtail
+  hosts: all
+  become: yes
+  vars_files:
+    - Common_Variables.yml
+
+  pre_tasks:
+    - name: Check if Promtail is running
+      command: systemctl is-active promtail
+      register: promtail_status
+      ignore_errors: true
+
+    - name: Skip Promtail installation if Promtail is already running
+      set_fact:
+        skip_promtail_installation: true
+      when: promtail_status.stdout == "active"
+
+  tasks:
+  
+    - name: Open UFW ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        state: enabled
+      with_items:
+        - 9080
+        - 22
+    
+    - name: Get the server's public IP address
+      command: "curl -s http://checkip.amazonaws.com"
+      register: public_ip
+
+    - name: Get the server's hostname
+      command: hostname
+      register: server_hostname
+
+    - name: Set localhost if monitoring_ip matches public IP
+      set_fact:
+        client_url: "http://localhost:3100/loki/api/v1/push"
+      when:
+        - public_ip.stdout == monitoring_ip
+
+    - name: Set client URL
+      set_fact:
+        client_url: "http://{{ monitoring_ip }}:3100/loki/api/v1/push"
+      when:
+        - public_ip.stdout != monitoring_ip
+
+    - name: Download Promtail binary
+      get_url:
+        url: "https://github.com/grafana/loki/releases/download/v{{ promtail_version }}/promtail-linux-amd64.zip"
+        dest: /tmp/promtail.zip
+      when: not skip_promtail_installation | default(false)
+
+    - name: Install unzip
+      ansible.builtin.package:
+        name: unzip
+        state: present
+
+    - name: Unzip Promtail binary
+      unarchive:
+        src: /tmp/promtail.zip
+        dest: /usr/local/bin/
+        remote_src: yes
+        creates: /usr/local/bin/promtail-linux-amd64
+      when: not skip_promtail_installation | default(false)
+
+    - name: Make Promtail executable
+      file:
+        path: /usr/local/bin/promtail-linux-amd64
+        mode: '0755'
+      when: not skip_promtail_installation | default(false)
+
+    - name: Create Promtail config directory
+      file:
+        path: /etc/promtail
+        state: directory
+        mode: '0755'
+      when: not skip_promtail_installation | default(false)
+
+    - name: Configure Promtail using template
+      template:
+        src: Promtail_Config.j2
+        dest: /etc/promtail/config.yml
+      vars:
+        public_ip: "{{ public_ip.stdout }}"
+        hostname: "{{ server_hostname.stdout }}"
+
+    - name: Create systemd service for Promtail
+      copy:
+        dest: /etc/systemd/system/promtail.service
+        content: |
+          [Unit]
+          Description=Promtail service
+          After=network.target
+
+          [Service]
+          ExecStart=/usr/local/bin/promtail-linux-amd64 -config.file=/etc/promtail/config.yml
+          Restart=always
+          User=root
+
+          [Install]
+          WantedBy=multi-user.target
+      when: not skip_promtail_installation | default(false)
+
+    - name: Reload systemd and restart Promtail
+      systemd:
+        daemon_reload: yes
+        name: promtail
+        enabled: yes
+        state: started

@@ -1,0 +1,36 @@
+# nginx_site_ssl.j2
+server {
+    listen 80;
+    server_name {{ ssl_domain }};
+    return 301 https://$host$request_uri;
+}
+
+server {
+    listen 443 ssl;
+    server_name {{ ssl_domain }};
+
+    ssl_certificate {{ ssl_certificate }};
+    ssl_certificate_key {{ ssl_certificate_key }};
+
+    ssl_protocols TLSv1.2 TLSv1.3;
+    ssl_prefer_server_ciphers on;
+    ssl_ciphers HIGH:!aNULL:!MD5;
+
+    location / {
+        proxy_pass http://unix:{{ django_project_dir }}/{{ django_project_name }}/{{ django_project_name }}.sock;
+        proxy_set_header Host $host;
+        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto https;
+    }
+
+    location /static/ {
+        autoindex on;
+        alias {{ django_project_dir }}/{{ django_project_name }}/staticfiles/;
+    }
+    
+    location /media/ {
+		autoindex on;
+        alias {{ django_project_dir }}/{{ django_project_name }}/media/;
+	}
+}

@@ -1,0 +1,73 @@
+# Ansible_Loki.yml
+---
+- name: Install Loki
+  hosts: all
+  become: yes
+  vars_files:
+    - Common_Variables.yml
+
+  pre_tasks:
+    - name: Check if Loki is running
+      command: systemctl is-active loki
+      register: loki_status
+      ignore_errors: yes
+
+  tasks:
+  
+    - name: Open UFW ports
+      ufw:
+        rule: allow
+        port: "{{ item }}"
+        state: enabled
+      with_items:
+        - 3100
+        - 22
+  
+    - name: Update apt cache
+      apt:
+        update_cache: yes
+      when: loki_status.stdout != "active"
+
+    - name: Install Loki from apt
+      apt:
+        name: loki={{ loki_version }}
+        state: present
+        update_cache: yes
+      when: loki_status.stdout != "active"
+
+    - name: Ensure Loki group exists
+      ansible.builtin.group:
+        name: loki
+        state: present
+
+    - name: Ensure Loki user exists and is part of the Loki group
+      ansible.builtin.user:
+        name: loki
+        group: loki
+        system: yes
+        shell: /bin/false
+        create_home: no
+        state: present
+    
+    - name: Create Loki configuration using template
+      template:
+        src: "Loki_Config.j2"
+        dest: "/etc/loki/config.yml"
+        owner: "{{ loki_user }}"
+        group: "{{ loki_user }}"
+        mode: 0644
+
+    - name: Create Loki data directory
+      file:
+        path: "{{ loki_data_dir }}"
+        state: directory
+        owner: "{{ loki_user }}"
+        group: "{{ loki_user }}"
+        mode: 0755
+      when: loki_status.stdout != "active"
+
+    - name: Ensure Loki service is enabled and restarted
+      systemd:
+        name: loki
+        enabled: yes
+        state: restarted
